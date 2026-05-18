@@ -1,0 +1,31 @@
+
+{
+  "manifest_version": 3,
+  "name": "Sureship Amazon Scraper",
+  "description": "Scrapes order data from Amazon Seller Central orders page.",
+  "version": "1.0.0",
+  "permissions": ["activeTab", "tabs", "scripting", "storage"],
+  "host_permissions": ["https://sellercentral.amazon.in/*", "http://localhost:3500/*"],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "sure.png",
+      "48": "sure.png",
+      "128": "sure.png"
+    }
+  },
+  "icons": {
+    "16": "sure.png",
+    "48": "sure.png",
+    "128": "sure.png"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://sellercentral.amazon.in/orders-v3/*"],
+      "js": ["content.js"]
+    }
+  ]
+}

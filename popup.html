@@ -1,0 +1,798 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sureship Amazon Scraper</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=DM+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+
+      :root {
+        --brand: #0b4d43;
+        --brand-hover: #0d6355;
+        --brand-light: #e1f5ee;
+        --brand-mid: #1d9e75;
+        --accent: #5dcaa5;
+        --bg: #f4f6f5;
+        --surface: #ffffff;
+        --surface-2: #f0f4f3;
+        --border: #dce8e5;
+        --border-dark: #b5cdc8;
+        --text-primary: #0d1f1c;
+        --text-secondary: #4a6b65;
+        --text-muted: #8aaca6;
+        --danger: #c0392b;
+        --danger-light: #fdf0ee;
+        --warning: #d4860b;
+        --warning-light: #fef9ec;
+        --success: #1d9e75;
+        --radius-sm: 6px;
+        --radius-md: 10px;
+        --radius-lg: 14px;
+        --font: "DM Sans", sans-serif;
+        --mono: "DM Mono", monospace;
+        --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.07);
+        --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.09);
+      }
+
+      body {
+        width: 400px;
+        min-height: 580px;
+        background: var(--bg);
+        font-family: var(--font);
+        color: var(--text-primary);
+        font-size: 13px;
+      }
+
+      .header {
+        background: var(--brand);
+        padding: 14px 16px 12px;
+        display: flex;
+        align-items: center;
+        gap: 11px;
+        position: relative;
+        overflow: hidden;
+      }
+      .header::after {
+        content: "";
+        position: absolute;
+        right: -20px;
+        top: -30px;
+        width: 120px;
+        height: 120px;
+        border-radius: 50%;
+        background: rgba(255, 255, 255, 0.05);
+        pointer-events: none;
+      }
+      .header-logo {
+        width: 36px;
+        height: 36px;
+        background: rgba(255, 255, 255, 0.15);
+        border-radius: var(--radius-md);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
+        overflow: hidden;
+      }
+      .header-logo img {
+        width: 28px;
+        height: 28px;
+        object-fit: contain;
+      }
+      .header-logo svg {
+        width: 20px;
+        height: 20px;
+        fill: none;
+        stroke: #fff;
+        stroke-width: 1.8;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      .header-text {
+        flex: 1;
+      }
+      .header-text h1 {
+        color: #fff;
+        font-size: 14px;
+        font-weight: 600;
+        line-height: 1;
+      }
+      .header-text p {
+        color: rgba(255, 255, 255, 0.6);
+        font-size: 11px;
+        margin-top: 2px;
+      }
+      .header-status {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        background: rgba(255, 255, 255, 0.12);
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        border-radius: 20px;
+        padding: 4px 10px;
+        font-size: 10.5px;
+        font-weight: 500;
+        color: #a7f3d0;
+      }
+      .header-status .dot {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: #5dca94;
+        box-shadow: 0 0 0 2px rgba(93, 202, 148, 0.35);
+        flex-shrink: 0;
+      }
+      .header-status.offline .dot {
+        background: #f87171;
+        box-shadow: 0 0 0 2px rgba(248, 113, 113, 0.35);
+      }
+      .header-status.offline {
+        color: #fecaca;
+      }
+
+      .body {
+        padding: 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+
+      .sec-label {
+        font-size: 10px;
+        font-weight: 600;
+        color: var(--text-muted);
+        letter-spacing: 0.7px;
+        text-transform: uppercase;
+        margin-bottom: 6px;
+      }
+
+      .card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
+        box-shadow: var(--shadow-sm);
+        overflow: hidden;
+      }
+      .card-inner {
+        padding: 12px 14px;
+      }
+
+      .auth-fields {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+        margin-bottom: 10px;
+      }
+      .field label {
+        display: block;
+        font-size: 11px;
+        font-weight: 500;
+        color: var(--text-secondary);
+        margin-bottom: 4px;
+      }
+      .field input {
+        width: 100%;
+        padding: 8px 10px;
+        border-radius: var(--radius-sm);
+        border: 1px solid var(--border);
+        background: var(--surface-2);
+        color: var(--text-primary);
+        font-family: var(--font);
+        font-size: 12.5px;
+        outline: none;
+        transition: border-color 0.15s, box-shadow 0.15s;
+      }
+      .field input::placeholder {
+        color: var(--text-muted);
+      }
+      .field input:focus {
+        border-color: var(--brand);
+        background: var(--surface);
+        box-shadow: 0 0 0 3px rgba(11, 77, 67, 0.12);
+      }
+
+      .auth-footer {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+      .auth-meta {
+        margin-left: auto;
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        font-size: 11px;
+        font-weight: 500;
+        color: var(--brand);
+        max-width: 42%;
+        text-align: right;
+      }
+      .auth-meta svg {
+        width: 13px;
+        height: 13px;
+        stroke: var(--brand);
+        flex-shrink: 0;
+      }
+      .auth-meta span {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 8px 14px;
+        border-radius: var(--radius-sm);
+        font-family: var(--font);
+        font-size: 12px;
+        font-weight: 500;
+        cursor: pointer;
+        transition: all 0.15s;
+        border: none;
+        white-space: nowrap;
+      }
+      .btn svg {
+        width: 14px;
+        height: 14px;
+        flex-shrink: 0;
+        stroke-width: 2;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+
+      .btn-primary {
+        background: var(--brand);
+        color: #fff;
+      }
+      .btn-primary:hover {
+        background: var(--brand-hover);
+      }
+      .btn-primary:active {
+        transform: scale(0.97);
+      }
+
+      .btn-outline {
+        background: transparent;
+        color: var(--text-secondary);
+        border: 1px solid var(--border-dark);
+      }
+      .btn-outline:hover {
+        background: var(--surface-2);
+        color: var(--text-primary);
+      }
+
+      .action-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+      }
+      .action-tile {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        padding: 11px 12px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        cursor: pointer;
+        transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
+        user-select: none;
+      }
+      .action-tile:hover {
+        border-color: var(--brand);
+        background: #f0faf6;
+        box-shadow: var(--shadow-sm);
+      }
+      .action-tile:active {
+        transform: scale(0.98);
+      }
+      .action-tile:disabled,
+      .action-tile.disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
+        pointer-events: none;
+      }
+      .tile-icon {
+        width: 34px;
+        height: 34px;
+        border-radius: 8px;
+        background: var(--brand-light);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
+      }
+      .tile-icon svg {
+        width: 17px;
+        height: 17px;
+        stroke: var(--brand);
+        stroke-width: 1.8;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        fill: none;
+      }
+      .tile-text p {
+        font-size: 12px;
+        font-weight: 500;
+        color: var(--text-primary);
+      }
+      .tile-text span {
+        font-size: 10.5px;
+        color: var(--text-muted);
+      }
+
+      .panel-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 10px 14px;
+        border-bottom: 1px solid var(--border);
+        background: var(--surface-2);
+      }
+      .panel-header-left {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .panel-header-left span {
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--text-primary);
+      }
+      .count-badge {
+        background: var(--brand);
+        color: #fff;
+        font-size: 10px;
+        font-weight: 600;
+        padding: 2px 7px;
+        border-radius: 10px;
+        font-family: var(--mono);
+      }
+      .panel-action-btn {
+        font-size: 11px;
+        color: var(--brand);
+        background: none;
+        border: none;
+        cursor: pointer;
+        font-family: var(--font);
+        font-weight: 500;
+        padding: 0;
+      }
+      .panel-action-btn:hover {
+        text-decoration: underline;
+      }
+
+      #fieldView {
+        max-height: 220px;
+        overflow-y: auto;
+      }
+      #fieldView .orders-scroll {
+        padding: 4px 0;
+      }
+
+      .empty-state {
+        padding: 28px 16px;
+        text-align: center;
+      }
+      .empty-icon {
+        width: 48px;
+        height: 48px;
+        background: var(--surface-2);
+        border-radius: 12px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        margin: 0 auto 10px;
+      }
+      .empty-icon svg {
+        width: 24px;
+        height: 24px;
+        stroke: var(--text-muted);
+        stroke-width: 1.5;
+        fill: none;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      .empty-state p {
+        font-size: 12px;
+        color: var(--text-secondary);
+      }
+      .empty-state span {
+        display: block;
+        font-size: 11px;
+        color: var(--text-muted);
+        margin-top: 4px;
+      }
+
+      .inline-message {
+        padding: 20px 14px;
+        font-size: 12px;
+        color: var(--text-secondary);
+        text-align: center;
+        line-height: 1.45;
+      }
+      .inline-message.error {
+        color: var(--danger);
+        background: var(--danger-light);
+      }
+
+      .order-block {
+        border-bottom: 1px solid var(--border);
+        padding: 10px 14px;
+        background: var(--surface);
+      }
+      .order-block:last-child {
+        border-bottom: none;
+      }
+      .order-block h4 {
+        margin: 0 0 8px;
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--brand);
+        font-family: var(--mono);
+      }
+      .field-line {
+        font-size: 11.5px;
+        margin-bottom: 5px;
+        line-height: 1.4;
+        white-space: pre-wrap;
+        word-break: break-word;
+        color: var(--text-secondary);
+      }
+      .field-line b {
+        color: var(--text-primary);
+        font-weight: 500;
+      }
+      .open-order-btn {
+        margin-top: 8px;
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        border: none;
+        background: var(--brand);
+        color: #fff;
+        border-radius: var(--radius-sm);
+        padding: 6px 12px;
+        font-size: 11px;
+        font-weight: 500;
+        font-family: var(--font);
+        cursor: pointer;
+        transition: background 0.15s;
+      }
+      .open-order-btn:hover {
+        background: var(--brand-hover);
+      }
+      .open-order-btn.secondary-btn {
+        background: var(--surface);
+        color: var(--brand);
+        border: 1px solid var(--border-dark);
+      }
+      .open-order-btn.secondary-btn:hover {
+        background: var(--brand-light);
+      }
+
+      .status-bar {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        padding: 9px 14px;
+        background: var(--surface);
+        border-top: 1px solid var(--border);
+        font-size: 11px;
+        color: var(--text-muted);
+      }
+      .status-bar .live-dot {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: var(--success);
+        animation: pulse 2s infinite;
+        flex-shrink: 0;
+      }
+      .status-bar.busy .live-dot {
+        background: var(--warning);
+      }
+      .status-bar.error .live-dot {
+        background: var(--danger);
+        animation: none;
+      }
+      @keyframes pulse {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.4;
+        }
+      }
+      .status-bar .sep {
+        color: var(--border-dark);
+        margin: 0 2px;
+      }
+      #statusText {
+        color: var(--text-secondary);
+        font-weight: 500;
+        flex-shrink: 0;
+      }
+      #statusSub {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      #authMessage {
+        font-size: 11px;
+        margin-top: 6px;
+        padding: 5px 8px;
+        border-radius: var(--radius-sm);
+        display: none;
+      }
+      #authMessage:not(:empty) {
+        display: block;
+        background: var(--warning-light);
+        color: var(--warning);
+      }
+      #authMessage.success {
+        background: var(--brand-light);
+        color: var(--brand);
+      }
+      #authMessage.error {
+        background: var(--danger-light);
+        color: var(--danger);
+      }
+
+      .toast-overlay {
+        position: fixed;
+        inset: 0;
+        z-index: 1000;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 16px;
+        background: rgba(13, 31, 28, 0.45);
+        opacity: 0;
+        visibility: hidden;
+        transition: opacity 0.2s ease, visibility 0.2s ease;
+      }
+      .toast-overlay.show {
+        opacity: 1;
+        visibility: visible;
+      }
+      .toast-card {
+        width: 100%;
+        max-width: 320px;
+        background: var(--surface);
+        border-radius: var(--radius-lg);
+        border: 1px solid var(--border);
+        box-shadow: var(--shadow-md);
+        padding: 16px 16px 14px;
+        text-align: center;
+        transform: scale(0.92) translateY(8px);
+        transition: transform 0.22s ease;
+      }
+      .toast-overlay.show .toast-card {
+        transform: scale(1) translateY(0);
+      }
+      .toast-icon {
+        width: 44px;
+        height: 44px;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        margin: 0 auto 10px;
+      }
+      .toast-icon svg {
+        width: 22px;
+        height: 22px;
+        stroke-width: 2;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        fill: none;
+      }
+      .toast-overlay.success .toast-icon {
+        background: var(--brand-light);
+      }
+      .toast-overlay.success .toast-icon svg {
+        stroke: var(--success);
+      }
+      .toast-overlay.warning .toast-icon {
+        background: var(--warning-light);
+      }
+      .toast-overlay.warning .toast-icon svg {
+        stroke: var(--warning);
+      }
+      .toast-overlay.error .toast-icon {
+        background: var(--danger-light);
+      }
+      .toast-overlay.error .toast-icon svg {
+        stroke: var(--danger);
+      }
+      .toast-title {
+        font-size: 15px;
+        font-weight: 600;
+        color: var(--text-primary);
+        margin-bottom: 6px;
+      }
+      .toast-message {
+        font-size: 12.5px;
+        line-height: 1.45;
+        color: var(--text-secondary);
+        margin-bottom: 14px;
+      }
+      .toast-btn {
+        width: 100%;
+        padding: 9px 14px;
+        border: none;
+        border-radius: var(--radius-sm);
+        font-family: var(--font);
+        font-size: 12.5px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: background 0.15s;
+      }
+      .toast-overlay.success .toast-btn {
+        background: var(--brand);
+        color: #fff;
+      }
+      .toast-overlay.success .toast-btn:hover {
+        background: var(--brand-hover);
+      }
+      .toast-overlay.warning .toast-btn {
+        background: var(--warning);
+        color: #fff;
+      }
+      .toast-overlay.error .toast-btn {
+        background: var(--danger);
+        color: #fff;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="header">
+      <div class="header-logo">
+        <img src="sure.png" alt="Sureship" onerror="this.style.display='none';this.nextElementSibling.style.display='block'" />
+        <svg viewBox="0 0 24 24" style="display: none"><path d="M12 2L3 7v5c0 5.25 3.75 10.15 9 11.25C17.25 22.15 21 17.25 21 12V7L12 2z" /></svg>
+      </div>
+      <div class="header-text">
+        <h1>Sureship Scraper</h1>
+        <p>Amazon Seller Central</p>
+      </div>
+      <div class="header-status" id="headerStatus">
+        <div class="dot"></div>
+        <span id="headerStatusText">Checking…</span>
+      </div>
+    </div>
+
+    <div class="body">
+      <div>
+        <div class="sec-label">Backend authentication</div>
+        <div class="card">
+          <div class="card-inner">
+            <div class="auth-fields">
+              <div class="field">
+                <label for="loginUsername">Username</label>
+                <input id="loginUsername" type="text" placeholder="you@sureship.com" autocomplete="username" />
+              </div>
+              <div class="field">
+                <label for="loginPassword">Password</label>
+                <input id="loginPassword" type="password" placeholder="••••••••" autocomplete="current-password" />
+              </div>
+            </div>
+            <div class="auth-footer">
+              <button id="loginBtn" type="button" class="btn btn-primary">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                  <path d="M15 3h4a2 2 0 012 2v14a2 2 0 01-2 2h-4M10 17l5-5-5-5M15 12H3" />
+                </svg>
+                Login
+              </button>
+              <button id="logoutBtn" type="button" class="btn btn-outline">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                  <path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9" />
+                </svg>
+                Logout
+              </button>
+              <div class="auth-meta">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                  <circle cx="12" cy="12" r="10" />
+                  <path d="M12 6v6l4 2" />
+                </svg>
+                <span id="authState">Checking…</span>
+              </div>
+            </div>
+            <div id="authMessage"></div>
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <div class="sec-label">Actions</div>
+        <div class="action-grid">
+          <div class="action-tile" id="downloadCurrentBtn" role="button" tabindex="0">
+            <div class="tile-icon">
+              <svg viewBox="0 0 24 24">
+                <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3" />
+              </svg>
+            </div>
+            <div class="tile-text">
+              <p>Download page</p>
+              <span>Export as CSV</span>
+            </div>
+          </div>
+          <div class="action-tile" id="saveToDbBtn" role="button" tabindex="0">
+            <div class="tile-icon">
+              <svg viewBox="0 0 24 24">
+                <ellipse cx="12" cy="5" rx="9" ry="3" />
+                <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3" />
+                <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5" />
+              </svg>
+            </div>
+            <div class="tile-text">
+              <p>Save to DB</p>
+              <span>Push scraped orders</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <div class="sec-label">Scraped orders</div>
+        <div class="card">
+          <div class="panel-header">
+            <div class="panel-header-left">
+              <span>Recent orders</span>
+              <span class="count-badge" id="orderCount">0</span>
+            </div>
+            <button type="button" class="panel-action-btn" id="refreshBtn">Refresh</button>
+          </div>
+          <div id="fieldView">
+            <div class="empty-state" id="emptyState">
+              <div class="empty-icon">
+                <svg viewBox="0 0 24 24">
+                  <rect x="2" y="3" width="20" height="14" rx="2" />
+                  <path d="M8 21h8M12 17v4" />
+                </svg>
+              </div>
+              <p>No data yet</p>
+              <span>Open Amazon Seller Central orders page</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="status-bar" id="statusBar">
+      <div class="live-dot"></div>
+      <span id="statusText">Ready</span>
+      <span class="sep">·</span>
+      <span id="statusSub">Waiting for page data</span>
+    </div>
+
+    <div class="toast-overlay" id="toastOverlay" role="alertdialog" aria-modal="true" aria-hidden="true">
+      <div class="toast-card">
+        <div class="toast-icon" id="toastIcon"></div>
+        <div class="toast-title" id="toastTitle"></div>
+        <div class="toast-message" id="toastMessage"></div>
+        <button type="button" class="toast-btn" id="toastCloseBtn">OK</button>
+      </div>
+    </div>
+
+    <script src="api.js"></script>
+    <script src="popup.js"></script>
+  </body>
+</html>
