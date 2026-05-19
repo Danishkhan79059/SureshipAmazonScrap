@@ -1,42 +1,14 @@
-/**
- * Sureship backend integration (MV3 popup).
- * POST /booking/createOrder — `source` is `amazonscrap`.
- * Ship-to + products from scrape; return + pickup default to your warehouse (override via sureshipLogisticsOverridesJson).
- */
 
 const SureshipBackend = (() => {
   const STORAGE_KEYS = {
     TOKEN: "sureshipJwtToken",
     SYNCED_ORDER_IDS: "sureshipSyncedOrderIds",
     LOGISTICS_OVERRIDES: "sureshipLogisticsOverridesJson",
+    USER_LOGISTICS: "sureshipUserLogisticsJson",
   };
 
   const API_BASE = "http://localhost:3500";
   const BOOKING_SOURCE = "amazonscrap";
-
-  const DEFAULT_RETURN_BLOCK = {
-    returnName: "Viz Labs 1",
-    returnPhone: "7045814007",
-    returnAltPhone: "",
-    returnEmail: "user@4114.in",
-    returnAddress: "817 urban state, sector - 4, near Chintpurni Mata Mandir",
-    returnPin: "122001",
-    returnCity: "Gurgaon",
-    returnState: "Haryana",
-    returnCountry: "India",
-  };
-
-  const DEFAULT_PICKUP_LOCATION = {
-    customer_code: 171,
-    name: "Viz Labs 1",
-    phone: "7045814007",
-    address: "817 urban state, sector - 4, near Chintpurni Mata Mandir",
-    pinCode: "122001",
-    city: "Gurgaon",
-    state: "Haryana",
-    country: "India",
-    warehouseId: 863,
-  };
 
   function storageGet(keys) {
     return new Promise((resolve, reject) => {
@@ -85,8 +57,128 @@ const SureshipBackend = (() => {
   }
 
   async function clearToken() {
-    await storageSet({ [STORAGE_KEYS.TOKEN]: "" });
-    console.log("[SureshipBackend] JWT cleared");
+    await storageSet({
+      [STORAGE_KEYS.TOKEN]: "",
+      [STORAGE_KEYS.USER_LOGISTICS]: "",
+    });
+    console.log("[SureshipBackend] JWT and user logistics cleared");
+  }
+
+  function decodeJwtPayload(token) {
+    try {
+      const part = String(token || "").split(".")[1];
+      if (!part) return null;
+      const json = atob(part.replace(/-/g, "+").replace(/_/g, "/"));
+      return JSON.parse(json);
+    } catch {
+      return null;
+    }
+  }
+
+  function buildLogisticsFromWarehouse(warehouse, customerCode) {
+    const wh = warehouse || {};
+    const code = Number(customerCode);
+    const pickupLocation = {
+      customer_code: code,
+      name: String(wh.pickupName || wh.name || "").trim(),
+      phone: String(wh.pickupPhone || wh.phone || "").trim(),
+      address: String(wh.pickupAddress || wh.address || "").trim(),
+      pinCode: String(wh.pickupPinCode || wh.pin || "").trim(),
+      city: String(wh.pickupCity || wh.city || "").trim(),
+      state: String(wh.pickupState || wh.state || "").trim(),
+      country: String(wh.pickupCountry || wh.country || "India").trim(),
+    };
+    if (wh.id != null && !Number.isNaN(Number(wh.id))) {
+      pickupLocation.warehouseId = Number(wh.id);
+    }
+
+    const returnBlock = {
+      returnName: pickupLocation.name,
+      returnPhone: pickupLocation.phone,
+      returnAltPhone: String(wh.pickupAltPhone || wh.altPhone || "").trim(),
+      returnEmail: String(wh.pickupEmail || wh.email || "").trim(),
+      returnAddress: String(
+        wh.returnpickupAddress || wh.returnAddress || pickupLocation.address
+      ).trim(),
+      returnPin: String(wh.returnpickupPinCode || wh.returnPin || pickupLocation.pinCode).trim(),
+      returnCity: String(wh.returnpickupCity || wh.returnCity || pickupLocation.city).trim(),
+      returnState: String(wh.returnpickupState || wh.returnState || pickupLocation.state).trim(),
+      returnCountry: pickupLocation.country,
+    };
+
+    return { pickupLocation, returnBlock };
+  }
+
+  async function fetchAndStoreUserLogistics(token) {
+    const jwt = decodeJwtPayload(token);
+    const codes = jwt?.UserInfo?.codes;
+    if (!Array.isArray(codes) || !codes.length) {
+      throw new Error("Logged-in user has no customer code. Contact admin.");
+    }
+    const customerCode = Number(codes[0]);
+    if (Number.isNaN(customerCode)) {
+      throw new Error("Invalid customer code on user account.");
+    }
+
+    const apiBase = getApiBaseUrl();
+    const url = `${apiBase}/warehouse/get_my_warehouses`;
+    console.log("[SureshipBackend] POST", url, "customer_code:", customerCode);
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+    });
+    const text = await res.text();
+    let data = null;
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch {
+      data = { raw: text };
+    }
+    if (!res.ok) {
+      const msg = (data && (data.message || data.error)) || text || `HTTP ${res.status}`;
+      throw new Error(typeof msg === "string" ? msg : "Failed to load warehouses");
+    }
+
+    const warehouses = Array.isArray(data?.warehouses) ? data.warehouses : [];
+    const warehouse = data?.defaultWarehouse || warehouses[0];
+    if (!warehouse) {
+      throw new Error("No warehouse configured for this user. Set a default warehouse in Sureship.");
+    }
+
+    const logistics = buildLogisticsFromWarehouse(warehouse, customerCode);
+    await storageSet({ [STORAGE_KEYS.USER_LOGISTICS]: JSON.stringify(logistics) });
+    console.log("[SureshipBackend] User logistics stored:", {
+      customer_code: logistics.pickupLocation.customer_code,
+      warehouseId: logistics.pickupLocation.warehouseId ?? null,
+      name: logistics.pickupLocation.name,
+    });
+    return logistics;
+  }
+
+  async function getUserLogistics(options = {}) {
+    const { refresh = false } = options;
+    if (!refresh) {
+      const data = await storageGet([STORAGE_KEYS.USER_LOGISTICS]);
+      const raw = data[STORAGE_KEYS.USER_LOGISTICS];
+      if (raw && typeof raw === "string") {
+        try {
+          const parsed = JSON.parse(raw);
+          if (parsed?.pickupLocation && parsed?.returnBlock) {
+            return parsed;
+          }
+        } catch {
+          console.warn("[SureshipBackend] sureshipUserLogisticsJson invalid");
+        }
+      }
+    }
+    const token = await getToken();
+    if (!token) {
+      throw new Error("Not logged in: missing JWT. Login first.");
+    }
+    return fetchAndStoreUserLogistics(token);
   }
 
   async function getSyncedOrderIds() {
@@ -489,7 +581,7 @@ const SureshipBackend = (() => {
     const fullContactText = `${shippingAddress} ${buyerName}`.trim();
     let phone = String(primary.buyerPhone || "").trim() || extractIndianMobileFromText(fullContactText);
     if (!phone) {
-      phone = String(mergedReturnBlock.returnPhone || DEFAULT_PICKUP_LOCATION.phone || "").trim();
+      phone = String(mergedReturnBlock.returnPhone || "").trim();
       if (phone) {
         console.warn(
           "[SureshipBackend] Buyer phone not on Amazon page; using warehouse phone for mandatory field:",
@@ -505,18 +597,18 @@ const SureshipBackend = (() => {
         findIndianStateInText(shippingAddress) ||
         findIndianStateInText(fullContactText) ||
         (addr.pinCode && addr.pinCode.length === 6 ? inferIndiaStateFromPin(addr.pinCode) : "") ||
-        String(mergedReturnBlock.returnState || DEFAULT_PICKUP_LOCATION.state || "").trim();
+        String(mergedReturnBlock.returnState || "").trim();
     }
     if (!city) {
       city =
         (addr.pinCode && addr.pinCode.length === 6 ? inferIndiaStateFromPin(addr.pinCode) : "") ||
         state ||
-        String(mergedReturnBlock.returnCity || DEFAULT_PICKUP_LOCATION.city || "").trim();
+        String(mergedReturnBlock.returnCity || "").trim();
     }
 
     let pinCode = String(addr.pinCode || "").replace(/\D/g, "").slice(0, 6);
     if (!/^\d{6}$/.test(pinCode)) {
-      pinCode = String(mergedReturnBlock.returnPin || DEFAULT_PICKUP_LOCATION.pinCode || "").replace(
+      pinCode = String(mergedReturnBlock.returnPin || "").replace(
         /\D/g,
         ""
       );
@@ -533,11 +625,11 @@ const SureshipBackend = (() => {
     if (!state && /^\d{6}$/.test(pinCode)) {
       state =
         inferIndiaStateFromPin(pinCode) ||
-        String(mergedReturnBlock.returnState || DEFAULT_PICKUP_LOCATION.state || "").trim();
+        String(mergedReturnBlock.returnState || "").trim();
     }
     if (!city) {
       city =
-        String(mergedReturnBlock.returnCity || DEFAULT_PICKUP_LOCATION.city || "").trim() ||
+        String(mergedReturnBlock.returnCity || "").trim() ||
         state ||
         "Locality pending";
     }
@@ -635,7 +727,8 @@ const SureshipBackend = (() => {
       throw new Error("Login response did not include accessToken or token");
     }
     await setToken(token);
-    return { token, data };
+    const logistics = await fetchAndStoreUserLogistics(token);
+    return { token, data, logistics };
   }
 
   async function createOrder(payload) {
@@ -695,9 +788,18 @@ const SureshipBackend = (() => {
       return { synced: [], skipped: [], errors: ["Not logged in"] };
     }
 
-    const logistics = await getLogisticsOverrides();
-    const mergedReturn = { ...DEFAULT_RETURN_BLOCK, ...(logistics.returnBlock || {}) };
-    const pickupLocation = { ...DEFAULT_PICKUP_LOCATION, ...(logistics.pickupLocation || {}) };
+    let userLogistics;
+    try {
+      userLogistics = await getUserLogistics();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[SureshipBackend] sync skipped: user logistics unavailable:", message);
+      return { synced: [], skipped: [], errors: [message] };
+    }
+
+    const overrides = await getLogisticsOverrides();
+    const mergedReturn = { ...userLogistics.returnBlock, ...(overrides.returnBlock || {}) };
+    const pickupLocation = { ...userLogistics.pickupLocation, ...(overrides.pickupLocation || {}) };
 
     const groups = groupRowsByOrderId(exportRows);
     const syncedIds = new Set(await getSyncedOrderIds());
@@ -761,6 +863,7 @@ const SureshipBackend = (() => {
     getSyncedOrderIds,
     appendSyncedOrderIds,
     login,
+    getUserLogistics,
     createOrder,
     syncExportRowsToDb,
     updateAuthUi,
