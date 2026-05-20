@@ -312,19 +312,23 @@ function scrapeOrderDetailsPage() {
   };
 }
 
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.action !== "SCRAPE_AMAZON_ORDERS") {
-    return;
-  }
+/** Avoid duplicate listeners when content.js is injected more than once. */
+if (!window.__SURESHIP_AMAZON_SCRAPER_ON_MESSAGE__) {
+  window.__SURESHIP_AMAZON_SCRAPER_ON_MESSAGE__ = true;
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message.action !== "SCRAPE_AMAZON_ORDERS") {
+      return;
+    }
 
-  try {
-    const isDetailPage = /\/orders-v3\/order\/\d{3}-\d{7}-\d{7}/.test(window.location.pathname);
-    const payload = isDetailPage ? scrapeOrderDetailsPage() : scrapeAmazonOrders();
-    sendResponse({ ok: true, data: payload });
-  } catch (error) {
-    sendResponse({
-      ok: false,
-      error: error instanceof Error ? error.message : "Unknown scrape error",
-    });
-  }
-});
+    try {
+      const isDetailPage = /\/orders-v3\/order\/\d{3}-\d{7}-\d{7}/.test(window.location.pathname);
+      const payload = isDetailPage ? scrapeOrderDetailsPage() : scrapeAmazonOrders();
+      sendResponse({ ok: true, data: payload });
+    } catch (error) {
+      sendResponse({
+        ok: false,
+        error: error instanceof Error ? error.message : "Unknown scrape error",
+      });
+    }
+  });
+}

@@ -5,6 +5,8 @@ const SureshipBackend = (() => {
     SYNCED_ORDER_IDS: "sureshipSyncedOrderIds",
     LOGISTICS_OVERRIDES: "sureshipLogisticsOverridesJson",
     USER_LOGISTICS: "sureshipUserLogisticsJson",
+    REMEMBERED_USERNAME: "sureshipRememberedUsername",
+    REMEMBERED_PASSWORD: "sureshipRememberedPassword",
   };
 
   const API_BASE = "http://localhost:3500";
@@ -48,7 +50,30 @@ const SureshipBackend = (() => {
 
   async function getToken() {
     const data = await storageGet([STORAGE_KEYS.TOKEN]);
-    return data[STORAGE_KEYS.TOKEN] || "";
+    return String(data[STORAGE_KEYS.TOKEN] || "").trim();
+  }
+
+  function pickApiErrorMessage(data, text, fallback) {
+    if (data && typeof data.message === "string" && data.message.trim()) {
+      return data.message.trim();
+    }
+    if (data && typeof data.error === "string" && data.error.trim()) {
+      return data.error.trim();
+    }
+    const raw = String(text || "").trim();
+    if (raw) return raw;
+    return fallback;
+  }
+
+  function explainUnauthorized(status, message, context = "api") {
+    const m = String(message || "").trim();
+    if (status !== 401 || !/^unauthorized$/i.test(m)) {
+      return m || (status ? `HTTP ${status}` : "Request failed");
+    }
+    if (context === "login") {
+      return "Wrong username or password, or account is inactive. Use the same Sureship username as the website (try all lowercase).";
+    }
+    return "Sureship rejected the request (401). Click Save again. If it repeats, reload the extension and check the backend is running on port 3500.";
   }
 
   async function setToken(token) {
@@ -66,7 +91,7 @@ const SureshipBackend = (() => {
 
   function decodeJwtPayload(token) {
     try {
-      const part = String(token || "").split(".")[1];
+      const part = String(token || "").trim().split(".")[1];
       if (!part) return null;
       const json = atob(part.replace(/-/g, "+").replace(/_/g, "/"));
       return JSON.parse(json);
@@ -74,6 +99,49 @@ const SureshipBackend = (() => {
       return null;
     }
   }
+
+  /** True if JWT exists and is not past expiry (Sureship access token is ~2h). */
+  async function isAccessTokenValid() {
+    const token = await getToken();
+    if (!token) return false;
+    const payload = decodeJwtPayload(token);
+    const exp = payload?.exp;
+    if (typeof exp !== "number") return true;
+    const skewMs = 60_000;
+    return Date.now() < exp * 1000 - skewMs;
+  }
+
+  async function getRememberedCredentials() {
+    const data = await storageGet([
+      STORAGE_KEYS.REMEMBERED_USERNAME,
+      STORAGE_KEYS.REMEMBERED_PASSWORD,
+    ]);
+    const username = String(data[STORAGE_KEYS.REMEMBERED_USERNAME] || "").trim();
+    const password = String(data[STORAGE_KEYS.REMEMBERED_PASSWORD] || "");
+    if (!username || !password) return null;
+    return { username: username.toLowerCase(), password };
+  }
+
+  async function rememberCredentials(username, password) {
+    const u = String(username || "").trim().toLowerCase();
+    const p = String(password ?? "");
+    if (!u || !p) return;
+    await storageSet({
+      [STORAGE_KEYS.REMEMBERED_USERNAME]: u,
+      [STORAGE_KEYS.REMEMBERED_PASSWORD]: p,
+    });
+    console.log("[SureshipBackend] Saved username/password for next sessions (local only).");
+  }
+
+  async function clearRememberedCredentials() {
+    await storageSet({
+      [STORAGE_KEYS.REMEMBERED_USERNAME]: "",
+      [STORAGE_KEYS.REMEMBERED_PASSWORD]: "",
+    });
+    console.log("[SureshipBackend] Cleared remembered credentials");
+  }
+
+  //warehouse and cusotemrcode logic here
 
   function buildLogisticsFromWarehouse(warehouse, customerCode) {
     const wh = warehouse || {};
@@ -109,6 +177,8 @@ const SureshipBackend = (() => {
     return { pickupLocation, returnBlock };
   }
 
+
+  //this function is for fetching the warehouse form api 
   async function fetchAndStoreUserLogistics(token) {
     const jwt = decodeJwtPayload(token);
     const codes = jwt?.UserInfo?.codes;
@@ -123,11 +193,12 @@ const SureshipBackend = (() => {
     const apiBase = getApiBaseUrl();
     const url = `${apiBase}/warehouse/get_my_warehouses`;
     console.log("[SureshipBackend] POST", url, "customer_code:", customerCode);
+    const authToken = String(token || "").trim();
     const res = await fetch(url, {
       method: "POST",
       headers: {
         Accept: "application/json",
-        Authorization: `Bearer ${token}`,
+        Authorization: `Bearer ${authToken}`,
       },
     });
     const text = await res.text();
@@ -138,7 +209,8 @@ const SureshipBackend = (() => {
       data = { raw: text };
     }
     if (!res.ok) {
-      const msg = (data && (data.message || data.error)) || text || `HTTP ${res.status}`;
+      const rawMsg = pickApiErrorMessage(data, text, `HTTP ${res.status}`);
+      const msg = explainUnauthorized(res.status, rawMsg, "api");
       throw new Error(typeof msg === "string" ? msg : "Failed to load warehouses");
     }
 
@@ -698,11 +770,13 @@ const SureshipBackend = (() => {
   async function login(username, password) {
     const apiBase = getApiBaseUrl();
     const url = `${apiBase}/auth/login`;
+    const user = String(username || "").trim().toLowerCase();
+    const pass = String(password ?? "");
     console.log("[SureshipBackend] POST", url);
     const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "application/json" },
-      body: JSON.stringify({ username, password }),
+      body: JSON.stringify({ username: user, password: pass }),
     });
     const text = await res.text();
     let data = null;
@@ -712,16 +786,18 @@ const SureshipBackend = (() => {
       data = { raw: text };
     }
     if (!res.ok) {
-      const msg = (data && (data.message || data.error)) || text || `HTTP ${res.status}`;
+      const rawMsg = pickApiErrorMessage(data, text, `HTTP ${res.status}`);
+      const msg = explainUnauthorized(res.status, rawMsg, "login");
       console.error("[SureshipBackend] Login failed:", res.status, msg);
       throw new Error(typeof msg === "string" ? msg : "Login failed");
     }
-    const token =
+    const token = String(
       data?.accessToken ||
       data?.token ||
       data?.data?.accessToken ||
       data?.data?.token ||
-      "";
+      ""
+    ).trim();
     if (!token) {
       console.error("[SureshipBackend] Login response missing token:", data);
       throw new Error("Login response did not include accessToken or token");
@@ -739,12 +815,13 @@ const SureshipBackend = (() => {
     }
     const url = `${apiBase}/booking/createOrder`;
     console.log("[SureshipBackend] POST", url, "shipments:", payload?.shipments?.length ?? 0);
+    const authToken = String(token || "").trim();
     const res = await fetch(url, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Accept: "application/json",
-        Authorization: `Bearer ${token}`,
+        Authorization: `Bearer ${authToken}`,
       },
       body: JSON.stringify(payload),
     });
@@ -756,7 +833,9 @@ const SureshipBackend = (() => {
       data = { raw: text };
     }
     if (!res.ok) {
-      const msg = (data && (data.message || data.error)) || text || `HTTP ${res.status}`;
+      const rawMsg = pickApiErrorMessage(data, text, `HTTP ${res.status}`);
+      const msg =
+        res.status === 401 ? explainUnauthorized(res.status, rawMsg, "api") : rawMsg;
       console.error("[SureshipBackend] createOrder failed:", res.status, msg);
       throw new Error(typeof msg === "string" ? msg : "createOrder failed");
     }
@@ -860,6 +939,10 @@ const SureshipBackend = (() => {
     getToken,
     setToken,
     clearToken,
+    isAccessTokenValid,
+    getRememberedCredentials,
+    rememberCredentials,
+    clearRememberedCredentials,
     getSyncedOrderIds,
     appendSyncedOrderIds,
     login,

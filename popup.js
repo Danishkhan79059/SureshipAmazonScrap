@@ -1,9 +1,11 @@
 const AMAZON_ORDERS_PREFIX = "https://sellercentral.amazon.in/orders-v3/";
 const AMAZON_BASE_URL = "https://sellercentral.amazon.in";
 const ORDER_DETAIL_URL_PREFIX = `${AMAZON_BASE_URL}/orders-v3/order/`;
+
 let activeTabId = null;
-/** Latest rows ready for POST /booking/createOrder (set after list scrape or detail view). */
-let lastExportRowsForDb = [];
+/** One shared in-flight login so Save + auto-login never collide with "return false". */
+let loginFlightPromise = null;
+let autoLoginTimer = null;
 
 function byId(id) {
   return document.getElementById(id);
@@ -17,64 +19,40 @@ function setStatusBarState(state) {
   if (state === "error") bar.classList.add("error");
 }
 
-function setOrderCount(count) {
-  const badge = byId("orderCount");
-  if (badge) badge.textContent = String(count ?? 0);
+function setStatus(text, sub, state = "idle") {
+  const primary = byId("statusText");
+  if (primary) primary.textContent = text;
+  const subNode = byId("statusSub");
+  if (subNode && sub !== undefined) subNode.textContent = sub;
+  setStatusBarState(state === "error" ? "error" : state === "busy" ? "busy" : "idle");
 }
 
-function renderEmptyState(title, subtitle) {
-  const view = byId("fieldView");
-  if (!view) return;
-  setOrderCount(0);
-  view.innerHTML = `<div class="empty-state">
-      <div class="empty-icon">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-          <rect x="2" y="3" width="20" height="14" rx="2"/>
-          <path d="M8 21h8M12 17v4"/>
-        </svg>
-      </div>
-      <p>${escapeHtml(title || "No data yet")}</p>
-      <span>${escapeHtml(subtitle || "Open Amazon Seller Central orders page")}</span>
-    </div>`;
+function setAuthMessage(text, type) {
+  const node = byId("authMessage");
+  if (!node) return;
+  node.textContent = text || "";
+  node.classList.remove("success", "error");
+  if (type) node.classList.add(type);
 }
 
-function showFieldMessage(text, isError) {
-  const view = byId("fieldView");
-  if (!view) return;
-  view.innerHTML = `<div class="inline-message${isError ? " error" : ""}">${escapeHtml(text)}</div>`;
+function setSaveButtonDisabled(disabled) {
+  const btn = byId("saveToDbBtn");
+  if (btn) btn.disabled = Boolean(disabled);
 }
-
-const TOAST_ICONS = {
-  success: `<svg viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5" stroke="currentColor"/></svg>`,
-  warning: `<svg viewBox="0 0 24 24"><path d="M12 9v4M12 17h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" stroke="currentColor"/></svg>`,
-  error: `<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor"/><path d="M15 9l-6 6M9 9l6 6" stroke="currentColor"/></svg>`,
-};
-
-let toastTimer = null;
 
 function hideToast() {
   const overlay = byId("toastOverlay");
   if (!overlay) return;
   overlay.classList.remove("show");
   overlay.setAttribute("aria-hidden", "true");
-  if (toastTimer) {
-    clearTimeout(toastTimer);
-    toastTimer = null;
-  }
 }
 
-function showToast(title, message, type = "success") {
+function showToast(title, message) {
   const overlay = byId("toastOverlay");
-  const icon = byId("toastIcon");
   const titleEl = byId("toastTitle");
   const messageEl = byId("toastMessage");
   if (!overlay || !titleEl || !messageEl) return;
-
   hideToast();
-
-  const kind = type === "error" || type === "warning" ? type : "success";
-  overlay.className = `toast-overlay ${kind}`;
-  if (icon) icon.innerHTML = TOAST_ICONS[kind] || TOAST_ICONS.success;
   titleEl.textContent = title;
   messageEl.textContent = message;
   overlay.classList.add("show");
@@ -96,55 +74,27 @@ function formatSaveDbResult(syncResult) {
   const synced = syncResult?.synced?.length ?? 0;
   const skipped = syncResult?.skipped?.length ?? 0;
   if (synced > 0 && skipped === 0) {
-    return {
-      type: "success",
-      title: "Saved successfully",
-      message: `${synced} order(s) saved to database.`,
-    };
+    return { title: "Saved successfully", message: `${synced} order(s) saved to database.` };
   }
   if (synced > 0 && skipped > 0) {
     return {
-      type: "warning",
       title: "Partially saved",
       message: `${synced} order(s) saved. ${skipped} duplicate(s) skipped.`,
     };
   }
   if (synced === 0 && skipped > 0) {
     return {
-      type: "warning",
       title: "Already in database",
-      message: `No new orders saved. ${skipped} duplicate order(s) were skipped.`,
+      message: `No new orders. ${skipped} duplicate(s) skipped.`,
     };
   }
-  return {
-    type: "warning",
-    title: "Nothing to save",
-    message: "No new orders were saved (empty or duplicate data).",
-  };
-}
-
-function setStatus(text, sub, state = "idle") {
-  const primary = byId("statusText") || byId("status");
-  if (primary) primary.textContent = text;
-  const subNode = byId("statusSub");
-  if (subNode && sub !== undefined) subNode.textContent = sub;
-  else if (subNode && text) subNode.textContent = text.length > 48 ? text.slice(0, 48) + "…" : "";
-  setStatusBarState(state === "error" ? "error" : state === "busy" ? "busy" : "idle");
-}
-
-function escapeHtml(value) {
-  return String(value)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
+  return { title: "Nothing to save", message: "No new orders were saved." };
 }
 
 function pickOrderId(text) {
   const source = String(text || "");
   const match = source.match(/\d{3}-\d{7}-\d{7}/);
-  return match ? match[0] : source;
+  return match ? match[0] : source.trim();
 }
 
 function pickLabelValue(text, label) {
@@ -159,14 +109,9 @@ function normalizeOrder(order) {
   const productInfo = raw[2] || "";
   const orderType = raw[3] || "";
   const statusInfo = raw[4] || "";
-  const statusSecondary = statusInfo.includes(")")
-    ? statusInfo.split(")").slice(1).join(")").trim()
-    : "";
 
   return {
-    rowIndex: order?.rowIndex ?? order?.index ?? "",
     orderId: order?.orderId ? pickOrderId(order.orderId) : pickOrderId(orderInfo),
-    orderLink: order?.orderLink ?? order?.selectors?.orderLink?.value ?? "",
     buyerName: order?.buyerName ?? order?.buyer ?? pickLabelValue(orderInfo, "Buyer name"),
     productName:
       order?.productName ??
@@ -179,30 +124,15 @@ function normalizeOrder(order) {
     itemSubtotal: order?.itemSubtotal ?? pickLabelValue(productInfo, "Item subtotal"),
     orderType: order?.orderType ?? orderType.split(" Ship by date")[0]?.trim() ?? "",
     orderStatus: order?.orderStatus ?? order?.status ?? statusInfo,
-    orderStatusSecondary: order?.orderStatusSecondary ?? statusSecondary,
     shipByDate: order?.shipByDate ?? pickLabelValue(orderType, "Ship by date"),
     deliverByDate: order?.deliverByDate ?? pickLabelValue(orderType, "Deliver by date"),
   };
-}
-
-function buildOrderUrl(orderLink) {
-  const value = String(orderLink || "").trim();
-  if (!value) return "";
-  if (/^https?:\/\//i.test(value)) return value;
-  if (value.startsWith("/")) return `${AMAZON_BASE_URL}${value}`;
-  return `${AMAZON_BASE_URL}/${value}`;
 }
 
 function buildOrderDetailUrl(orderId) {
   const id = pickOrderId(orderId).trim();
   if (!/^\d{3}-\d{7}-\d{7}$/.test(id)) return "";
   return `${ORDER_DETAIL_URL_PREFIX}${id}`;
-}
-
-function openOrderLink(orderLink) {
-  const url = buildOrderUrl(orderLink);
-  if (!url || !activeTabId) return;
-  chrome.tabs.update(activeTabId, { url });
 }
 
 function wait(ms) {
@@ -228,11 +158,40 @@ function waitForTabComplete(tabId, timeoutMs = 25000) {
   });
 }
 
-function scrapeActiveTab(tabId) {
+/**
+ * Ensures content.js is in the tab so sendMessage does not fail with
+ * "Could not establish connection. Receiving end does not exist."
+ */
+async function ensureAmazonScraperContentScript(tabId) {
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId, allFrames: false },
+      files: ["content.js"],
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn("[popup] inject content.js:", msg);
+    throw new Error(
+      "Cannot run scraper on this tab. Open https://sellercentral.amazon.in orders (list or order detail) and try again."
+    );
+  }
+}
+
+async function scrapeActiveTab(tabId) {
+  await ensureAmazonScraperContentScript(tabId);
   return new Promise((resolve, reject) => {
     chrome.tabs.sendMessage(tabId, { action: "SCRAPE_AMAZON_ORDERS" }, (response) => {
       if (chrome.runtime.lastError) {
-        reject(new Error(chrome.runtime.lastError.message || "Scrape failed."));
+        const raw = chrome.runtime.lastError.message || "Scrape failed.";
+        if (/Receiving end does not exist/i.test(raw)) {
+          reject(
+            new Error(
+              "Scraper could not reach this page. Refresh the Amazon orders tab, then open this popup again."
+            )
+          );
+          return;
+        }
+        reject(new Error(raw));
         return;
       }
       if (!response?.ok) {
@@ -242,36 +201,6 @@ function scrapeActiveTab(tabId) {
       resolve(response.data);
     });
   });
-}
-
-function toCsvValue(value) {
-  const safe = String(value ?? "").replace(/"/g, '""');
-  return `"${safe}"`;
-}
-
-function downloadCsvFile(filename, rows) {
-  if (!rows.length) return;
-  const headers = Object.keys(rows[0]);
-  const csvBody = [
-    headers.map(toCsvValue).join(","),
-    ...rows.map((row) => headers.map((key) => toCsvValue(row[key])).join(",")),
-  ].join("\n");
-
-  const blob = new Blob([csvBody], { type: "text/csv;charset=utf-8;" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = filename;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  URL.revokeObjectURL(url);
-}
-
-function getFilenameSuffixFromUrl(url) {
-  const orderId = pickOrderId(url || "");
-  if (/^\d{3}-\d{7}-\d{7}$/.test(orderId)) return orderId;
-  return new Date().toISOString().replace(/[:.]/g, "-");
 }
 
 function detailStubFromOrderDetails(details, pageUrl) {
@@ -288,15 +217,6 @@ function detailStubFromOrderDetails(details, pageUrl) {
     quantity: "",
     itemSubtotal: "",
   };
-}
-
-function refreshLastExportRowsFromDetailPayload(data) {
-  const details = data?.orderDetails;
-  if (!details) {
-    lastExportRowsForDb = [];
-    return;
-  }
-  lastExportRowsForDb = buildExportRows(detailStubFromOrderDetails(details, data.pageUrl), details, data.pageUrl || "");
 }
 
 function buildExportRows(order, details, detailPageUrl) {
@@ -350,32 +270,7 @@ function buildExportRows(order, details, detailPageUrl) {
   }));
 }
 
-function exportSingleDetailPage(payload) {
-  const details = payload?.orderDetails;
-  if (!details) {
-    throw new Error("Order details not found on this page.");
-  }
-
-  const orderStub = {
-    orderId: details.orderId || pickOrderId(payload?.pageUrl || ""),
-    buyerName: details.buyerName || "",
-    orderStatus: "",
-    shipByDate: details.shipBy || "",
-    deliverByDate: details.deliverBy || "",
-    orderType: details.fulfillment || "",
-    productName: "",
-    asin: "",
-    sku: "",
-    quantity: "",
-    itemSubtotal: "",
-  };
-
-  const rows = buildExportRows(orderStub, details, payload.pageUrl);
-  const suffix = getFilenameSuffixFromUrl(payload.pageUrl || details.orderId || "");
-  downloadCsvFile(`amazon-current-order-${suffix}.csv`, rows);
-}
-
-async function scrapeDetailsAndExport(orders) {
+async function scrapeDetailsForDb(orders) {
   if (!activeTabId) return [];
   const allRows = [];
 
@@ -384,7 +279,7 @@ async function scrapeDetailsAndExport(orders) {
     const detailUrl = buildOrderDetailUrl(order.orderId);
     if (!detailUrl) continue;
 
-    setStatus(`Opening order ${index + 1}/${orders.length}: ${order.orderId}`);
+    setStatus("Scraping orders", `Order ${index + 1} of ${orders.length}…`, "busy");
     chrome.tabs.update(activeTabId, { url: detailUrl });
     await waitForTabComplete(activeTabId);
     await wait(1800);
@@ -406,306 +301,237 @@ async function scrapeDetailsAndExport(orders) {
     }
   }
 
-  if (allRows.length) {
-    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-    downloadCsvFile(`amazon-order-details-${stamp}.csv`, allRows);
-  }
   return allRows;
 }
 
-async function renderOrders(data) {
-  const view = byId("fieldView");
-  if (!view) return;
-
-  const orders = (data?.orders || []).map(normalizeOrder);
-  if (!orders.length) {
-    renderEmptyState("No rows found", "Try another page or refresh");
-    return;
-  }
-
-  setOrderCount(orders.length);
-  view.innerHTML = `<div class="orders-scroll">${orders
-    .map(
-      (order) => `<div class="order-block">
-        <h4>Order ${escapeHtml(order.rowIndex)}</h4>
-        <div class="field-line"><b>Order ID:</b> ${escapeHtml(order.orderId)}</div>
-        <div class="field-line"><b>Order Link:</b> ${escapeHtml(buildOrderUrl(order.orderLink))}</div>
-        <div class="field-line"><b>Mapped Detail URL:</b> ${escapeHtml(buildOrderDetailUrl(order.orderId))}</div>
-        <div class="field-line"><b>Buyer Name:</b> ${escapeHtml(order.buyerName)}</div>
-        <div class="field-line"><b>Product Name:</b><br>${escapeHtml(order.productName)}</div>
-        <div class="field-line"><b>ASIN:</b> ${escapeHtml(order.asin)}</div>
-        <div class="field-line"><b>SKU:</b> ${escapeHtml(order.sku)}</div>
-        <div class="field-line"><b>Quantity:</b> ${escapeHtml(order.quantity)}</div>
-        <div class="field-line"><b>Subtotal:</b> ${escapeHtml(order.itemSubtotal)}</div>
-        <div class="field-line"><b>Order Type:</b> ${escapeHtml(order.orderType)}</div>
-        <div class="field-line"><b>Status:</b> ${escapeHtml(order.orderStatus)}</div>
-        <div class="field-line"><b>Status Note:</b><br>${escapeHtml(order.orderStatusSecondary)}</div>
-        <div class="field-line"><b>Ship By:</b> ${escapeHtml(order.shipByDate)}</div>
-        <div class="field-line"><b>Deliver By:</b> ${escapeHtml(order.deliverByDate)}</div>
-        <button class="open-order-btn" data-order-link="${escapeHtml(order.orderLink)}">Open This Order</button>
-      </div>`
-    )
-    .join("")}</div>`;
-
-  view.querySelectorAll(".open-order-btn").forEach((button) => {
-    button.addEventListener("click", () => {
-      const href = button.getAttribute("data-order-link") || "";
-      openOrderLink(href);
-    });
-  });
-
-  setStatus("Processing orders", "Opening each order detail and exporting…", "busy");
-  const exportRows = await scrapeDetailsAndExport(orders);
-  lastExportRowsForDb = exportRows;
-  setStatus("Done", "CSV downloaded — use Save to DB when ready");
+async function getCredentialsForLogin() {
+  let username = byId("loginUsername")?.value?.trim().toLowerCase() || "";
+  let password = byId("loginPassword")?.value || "";
+  const remembered = await SureshipBackend.getRememberedCredentials();
+  if (!username && remembered?.username) username = remembered.username;
+  if (!password && remembered?.password) password = remembered.password;
+  return { username, password };
 }
 
-async function downloadCurrentPageData() {
+/** Prefill inputs from chrome.storage (only if fields are empty). */
+async function restoreRememberedToForm() {
+  const remembered = await SureshipBackend.getRememberedCredentials();
+  if (!remembered) return;
+  const uEl = byId("loginUsername");
+  const pEl = byId("loginPassword");
+  if (uEl && !String(uEl.value || "").trim()) uEl.value = remembered.username;
+  if (pEl && !String(pEl.value || "").trim()) pEl.value = remembered.password;
+}
+
+async function handleClearSavedLogin() {
   try {
-    setStatus("Downloading", "Reading current order detail page…", "busy");
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (!tab?.id || !tab.url) {
-      throw new Error("No active tab found.");
-    }
-
-    activeTabId = tab.id;
-    if (!tab.url.includes("/orders-v3/order/")) {
-      throw new Error("Open an Amazon order detail page first.");
-    }
-
-    const payload = await scrapeActiveTab(tab.id);
-    if (payload?.pageType !== "detail") {
-      throw new Error("Current page is not an order detail page.");
-    }
-
-    renderOrderDetails(payload);
-    exportSingleDetailPage(payload);
-    refreshLastExportRowsFromDetailPayload(payload);
-    setOrderCount(1);
-    setStatus("Done", "CSV downloaded — use Save to DB when ready");
-  } catch (error) {
-    setStatus("Download failed", error instanceof Error ? error.message : "Unknown error", "error");
-    showFieldMessage(error instanceof Error ? error.message : "Unknown error", true);
+    await SureshipBackend.clearRememberedCredentials();
+    await SureshipBackend.clearToken();
+    const uEl = byId("loginUsername");
+    const pEl = byId("loginPassword");
+    if (uEl) uEl.value = "";
+    if (pEl) pEl.value = "";
+    setAuthMessage("Saved login cleared from this computer.", "success");
+    setStatus("Ready", "Enter username and password again");
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    setAuthMessage(msg, "error");
+    setStatus("Clear failed", msg, "error");
   }
 }
 
-function renderOrderDetails(data) {
-  const view = byId("fieldView");
-  if (!view) return;
+/**
+ * Sureship login using form fields or remembered credentials.
+ * Concurrent calls share the same in-flight request.
+ */
+async function tryLoginFromForm(options = {}) {
+  const { silent = false } = options;
+  let { username, password } = await getCredentialsForLogin();
+  if (!username || !password) return false;
 
-  const details = data?.orderDetails;
-  if (!details) {
-    renderEmptyState("Order details not found", "Open a valid order detail page");
-    lastExportRowsForDb = [];
-    return;
+  const uEl = byId("loginUsername");
+  const pEl = byId("loginPassword");
+  if (uEl && !String(uEl.value || "").trim()) uEl.value = username;
+  if (pEl && !String(pEl.value || "").trim()) pEl.value = password;
+
+  if (loginFlightPromise) {
+    return loginFlightPromise;
   }
 
-  setOrderCount((details.items || []).length || 1);
+  loginFlightPromise = (async () => {
+    if (!silent) setStatus("Logging in", "Sureship backend…", "busy");
+    try {
+      await SureshipBackend.login(username, password);
+      await SureshipBackend.rememberCredentials(username, password);
+      setAuthMessage("Logged in — you can click Save to DB.", "success");
+      setStatus("Logged in", `Connected as ${username}`);
+      return true;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setAuthMessage(msg, "error");
+      if (!silent) setStatus("Login failed", msg, "error");
+      return false;
+    } finally {
+      loginFlightPromise = null;
+    }
+  })();
 
-  const linksHtml = (details.links || [])
-    .map((link) => {
-      const fullUrl = buildOrderUrl(link.href);
-      return `<div class="field-line">
-        <b>${escapeHtml(link.label)}:</b>
-        <button class="open-order-btn" data-order-link="${escapeHtml(link.href)}">Open</button>
-        <div>${escapeHtml(fullUrl)}</div>
-      </div>`;
-    })
-    .join("");
+  return loginFlightPromise;
+}
 
-  const itemsHtml = (details.items || [])
-    .map(
-      (item) => `<div class="order-block">
-        <h4>Item ${escapeHtml(item.itemIndex)}</h4>
-        <div class="field-line"><b>Status:</b> ${escapeHtml(item.status)}</div>
-        <div class="field-line"><b>Product:</b> ${escapeHtml(item.productName)}</div>
-        <div class="field-line"><b>ASIN:</b> ${escapeHtml(item.asin)}</div>
-        <div class="field-line"><b>SKU:</b> ${escapeHtml(item.sku)}</div>
-        <div class="field-line"><b>Qty:</b> ${escapeHtml(item.quantity)}</div>
-        <div class="field-line"><b>Unit Price:</b> ${escapeHtml(item.unitPrice)}</div>
-        <div class="field-line"><b>Order Item ID:</b> ${escapeHtml(item.orderItemId)}</div>
-        <div class="field-line"><b>Image:</b> ${escapeHtml(item.productImage)}</div>
-      </div>`
-    )
-    .join("");
+function scheduleAutoLogin() {
+  if (autoLoginTimer) clearTimeout(autoLoginTimer);
+  autoLoginTimer = setTimeout(() => {
+    autoLoginTimer = null;
+    void (async () => {
+      const { username, password } = await getCredentialsForLogin();
+      if (username && password) void tryLoginFromForm({ silent: true });
+    })();
+  }, 1000);
+}
 
-  view.innerHTML = `<div class="order-block">
-      <h4>Order Details</h4>
-      <div class="field-line"><b>Order ID:</b> ${escapeHtml(details.orderId || "")}</div>
-      <div class="field-line"><b>Ship By:</b> ${escapeHtml(details.shipBy || "")}</div>
-      <div class="field-line"><b>Deliver By:</b> ${escapeHtml(details.deliverBy || "")}</div>
-      <div class="field-line"><b>Purchase Date:</b> ${escapeHtml(details.purchaseDate || "")}</div>
-      <div class="field-line"><b>Shipping Service:</b> ${escapeHtml(details.shippingService || "")}</div>
-      <div class="field-line"><b>Fulfillment:</b> ${escapeHtml(details.fulfillment || "")}</div>
-      <div class="field-line"><b>Buyer Name:</b> ${escapeHtml(details.buyerName || "")}</div>
-      <div class="field-line"><b>Ship To:</b><br>${escapeHtml(details.shippingAddress || "")}</div>
-      ${linksHtml}
-    </div>
-    ${itemsHtml || "<div class='field-line'>No items found.</div>"}`;
+async function scrapeExportRowsFromActiveTab() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab?.id || !tab.url) {
+    throw new Error("No active tab found.");
+  }
+  if (!tab.url.includes("sellercentral.amazon.in/orders-v3")) {
+    throw new Error("Open Amazon Seller Central orders page first.");
+  }
 
-  view.querySelectorAll(".open-order-btn").forEach((button) => {
-    button.addEventListener("click", () => {
-      const href = button.getAttribute("data-order-link") || "";
-      openOrderLink(href);
-    });
-  });
+  activeTabId = tab.id;
+  const payload = await scrapeActiveTab(tab.id);
 
-  refreshLastExportRowsFromDetailPayload(data);
+  if (payload?.pageType === "detail") {
+    const details = payload.orderDetails;
+    if (!details) throw new Error("Order details not found on this page.");
+    const stub = detailStubFromOrderDetails(details, payload.pageUrl);
+    return buildExportRows(stub, details, payload.pageUrl);
+  }
+
+  const orders = (payload?.orders || []).map(normalizeOrder).filter((o) => o.orderId);
+  if (!orders.length) {
+    throw new Error("No orders found on this page.");
+  }
+
+  setStatus("Scraping orders", `Found ${orders.length} order(s)…`, "busy");
+  return scrapeDetailsForDb(orders);
 }
 
 async function handleSaveToDbClick() {
-  if (!lastExportRowsForDb.length) {
-    setStatus("Nothing to save", "Scrape orders first", "error");
-    showToast(
-      "No data to save",
-      "Open Amazon orders page or an order detail page and scrape data first.",
-      "error"
-    );
-    console.warn("[popup] save to DB: no lastExportRowsForDb");
+  if (autoLoginTimer) {
+    clearTimeout(autoLoginTimer);
+    autoLoginTimer = null;
+  }
+
+  if (!loginFlightPromise) {
+    setAuthMessage("");
+  }
+
+  await restoreRememberedToForm();
+  const { username, password } = await getCredentialsForLogin();
+  if (!username || !password) {
+    setAuthMessage("Enter username and password once. They stay saved on this computer.", "error");
+    setStatus("Missing credentials", "Fill username and password", "error");
     return;
   }
+
+  setSaveButtonDisabled(true);
   try {
-    setStatus("Saving", "POST /booking/createOrder…", "busy");
-    const syncResult = await SureshipBackend.syncExportRowsToDb(lastExportRowsForDb);
+    const sessionOk = await SureshipBackend.isAccessTokenValid();
+    if (sessionOk) {
+      setStatus("Using saved session", "Skipping login — scraping…", "busy");
+    } else {
+      if (loginFlightPromise) {
+        setStatus("Please wait", "Login already in progress…", "busy");
+      } else {
+        setStatus("Logging in", "Sureship…", "busy");
+      }
+      const loginOk = await tryLoginFromForm({ silent: true });
+      if (!loginOk) {
+        const errText = byId("authMessage")?.textContent?.trim() || "Login failed";
+        setStatus("Login failed", errText, "error");
+        showToast("Login failed", errText);
+        return;
+      }
+    }
+
+    setStatus("Scraping", "Reading Amazon page…", "busy");
+    const exportRows = await scrapeExportRowsFromActiveTab();
+    if (!exportRows.length) {
+      throw new Error("No order data scraped from the page.");
+    }
+
+    setStatus("Saving", "Writing orders to database…", "busy");
+    const syncResult = await SureshipBackend.syncExportRowsToDb(exportRows);
+
     if (syncResult.errors?.length) {
       const errMsg = syncResult.errors[0] || "Unknown error";
-      console.error("[popup] save to DB errors:", syncResult.errors);
+      setAuthMessage(errMsg, "error");
       setStatus("Save failed", errMsg, "error");
-      showToast("Save failed", errMsg, "error");
+      showToast("Save failed", errMsg);
       return;
     }
+
     const toast = formatSaveDbResult(syncResult);
-    setStatus(toast.title, toast.message, toast.type === "error" ? "error" : "idle");
-    showToast(toast.title, toast.message, toast.type);
+    setAuthMessage(toast.message, "success");
+    setStatus(toast.title, toast.message);
+    showToast(toast.title, toast.message);
     console.log("[popup] save to DB:", syncResult);
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : "Unknown error";
+    setAuthMessage(errMsg, "error");
+    setStatus("Failed", errMsg, "error");
+    showToast("Failed", errMsg);
     console.error("[popup] save to DB:", err);
-    setStatus("Save failed", errMsg, "error");
-    showToast("Save failed", errMsg, "error");
+  } finally {
+    setSaveButtonDisabled(false);
   }
-}
-
-async function autoLoadOrders() {
-  try {
-    setStatus("Loading", "Scraping Amazon orders page…", "busy");
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (!tab?.id || !tab.url) {
-      throw new Error("No active tab found.");
-    }
-    activeTabId = tab.id;
-    if (!tab.url.startsWith(AMAZON_ORDERS_PREFIX)) {
-      throw new Error("Open Amazon orders page first.");
-    }
-
-    chrome.tabs.sendMessage(tab.id, { action: "SCRAPE_AMAZON_ORDERS" }, (response) => {
-      if (chrome.runtime.lastError) {
-        setStatus("Scrape failed", chrome.runtime.lastError.message || "Scrape failed.", "error");
-        showFieldMessage(chrome.runtime.lastError.message || "Scrape failed.", true);
-        return;
-      }
-      if (!response?.ok) {
-        setStatus("Scrape failed", response?.error || "No response received.", "error");
-        showFieldMessage(response?.error || "No response received.", true);
-        return;
-      }
-
-      if (response.data?.pageType === "detail") {
-        setOrderCount(1);
-        setStatus("Ready", "Order detail captured — save to DB after login");
-        renderOrderDetails(response.data);
-      } else {
-        setStatus("Loaded", `${response.data.totalRows} rows captured`);
-        void renderOrders(response.data).catch((err) => {
-          console.error("[popup] renderOrders failed:", err);
-          setStatus("Render failed", err instanceof Error ? err.message : "Unknown", "error");
-        });
-      }
-    });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : "Unknown error";
-    setStatus("Unable to load", msg, "error");
-    showFieldMessage(msg, true);
-  }
-}
-
-function bindActionTile(id, handler) {
-  const tile = byId(id);
-  if (!tile) return;
-  const run = () => void handler();
-  tile.addEventListener("click", run);
-  tile.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" || e.key === " ") {
-      e.preventDefault();
-      run();
-    }
-  });
-}
-
-function bindPopupControls() {
-  bindActionTile("downloadCurrentBtn", downloadCurrentPageData);
-  bindActionTile("saveToDbBtn", handleSaveToDbClick);
-  const refreshBtn = byId("refreshBtn");
-  if (refreshBtn) refreshBtn.addEventListener("click", () => void autoLoadOrders());
-}
-
-function setAuthMessage(text, type) {
-  const node = byId("authMessage");
-  if (!node) return;
-  node.textContent = text || "";
-  node.classList.remove("success", "error");
-  if (type) node.classList.add(type);
-}
-
-async function handleLoginClick() {
-  const username = byId("loginUsername")?.value?.trim() || "";
-  const password = byId("loginPassword")?.value || "";
-  setAuthMessage("");
-  if (!username || !password) {
-    setAuthMessage("Enter username and password.", "error");
-    return;
-  }
-  try {
-    setStatus("Logging in", "Connecting to backend…", "busy");
-    await SureshipBackend.login(username, password);
-    await SureshipBackend.updateAuthUi();
-    setAuthMessage("Login successful.", "success");
-    setStatus("Logged in", "Token saved");
-    console.log("[popup] Login OK");
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "Login failed";
-    setAuthMessage(message, "error");
-    setStatus("Login failed", message, "error");
-    console.error("[popup] Login error:", error);
-  }
-}
-
-async function handleLogoutClick() {
-  try {
-    await SureshipBackend.clearToken();
-    await SureshipBackend.updateAuthUi();
-    setAuthMessage("Logged out.", "success");
-    setStatus("Logged out", "Token cleared");
-    console.log("[popup] Logout OK");
-  } catch (error) {
-    console.error("[popup] Logout error:", error);
-    setAuthMessage(error instanceof Error ? error.message : "Logout failed", "error");
-  }
-}
-
-async function initAuthControls() {
-  await SureshipBackend.updateAuthUi();
-  const loginBtn = byId("loginBtn");
-  const logoutBtn = byId("logoutBtn");
-  if (loginBtn) loginBtn.addEventListener("click", () => void handleLoginClick());
-  if (logoutBtn) logoutBtn.addEventListener("click", () => void handleLogoutClick());
 }
 
 function bootPopup() {
   initToast();
-  void initAuthControls();
-  bindPopupControls();
-  autoLoadOrders();
+  const saveBtn = byId("saveToDbBtn");
+  if (saveBtn) saveBtn.addEventListener("click", () => void handleSaveToDbClick());
+
+  const clearBtn = byId("clearSavedLoginBtn");
+  if (clearBtn) clearBtn.addEventListener("click", () => void handleClearSavedLogin());
+
+  const userEl = byId("loginUsername");
+  const passEl = byId("loginPassword");
+  if (userEl) {
+    userEl.addEventListener("input", () => scheduleAutoLogin());
+    userEl.addEventListener("change", () => scheduleAutoLogin());
+  }
+  if (passEl) {
+    passEl.addEventListener("input", () => scheduleAutoLogin());
+    passEl.addEventListener("blur", () => {
+      const u = byId("loginUsername")?.value?.trim() || "";
+      const p = byId("loginPassword")?.value || "";
+      if (u && p) void tryLoginFromForm({ silent: true });
+    });
+    passEl.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        void handleSaveToDbClick();
+      }
+    });
+  }
+
+  void (async () => {
+    await restoreRememberedToForm();
+    if (await SureshipBackend.isAccessTokenValid()) {
+      const r = await SureshipBackend.getRememberedCredentials();
+      const who = r?.username || byId("loginUsername")?.value?.trim() || "Sureship";
+      setAuthMessage(
+        "Session active — press Save to DB only until the token expires (~2 hours).",
+        "success"
+      );
+      setStatus("Connected", `Logged in as ${who}`);
+    } else {
+      setStatus("Ready", "Enter credentials once — they are saved on this PC");
+    }
+  })();
 }
 
 if (document.readyState === "loading") {

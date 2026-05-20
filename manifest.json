@@ -25,7 +25,8 @@
   "content_scripts": [
     {
       "matches": ["https://sellercentral.amazon.in/orders-v3/*"],
-      "js": ["content.js"]
+      "js": ["content.js"],
+      "run_at": "document_idle"
     }
   ]
 }
